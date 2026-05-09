@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+.env
+results/cache/
+results/runs/
+*.npz
+*.pt
+!tests/fixtures/*.npz
