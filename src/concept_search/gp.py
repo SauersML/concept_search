@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import gpytorch
 import torch
-from botorch.models import FixedNoiseGP, SingleTaskGP
+from botorch.models import SingleTaskGP
 from botorch.models.transforms.outcome import Standardize
 from gpytorch.constraints import GreaterThan
 from gpytorch.likelihoods import GaussianLikelihood
@@ -52,8 +52,9 @@ def make_gp(
             outcome_transform=outcome_tf,
         )
     else:
+        # Modern BoTorch unified FixedNoiseGP into SingleTaskGP via train_Yvar.
         Yvar = train_yvar.unsqueeze(-1).float().clamp_min(1e-4)
-        model = FixedNoiseGP(
+        model = SingleTaskGP(
             train_X=X, train_Y=Y, train_Yvar=Yvar,
             covar_module=kernel,
             mean_module=mean,
