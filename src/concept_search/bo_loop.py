@@ -122,7 +122,7 @@ def run_bo(
         print(f"  [bo_loop] final fit_gp failed: {type(e).__name__}: {e}")
 
     model.eval()
-    X_all = candidate_idx.unsqueeze(-1).float()
+    X_all = candidate_idx.unsqueeze(-1).double()
     with torch.no_grad():
         post = model.posterior(X_all)
         mean_all = post.mean.squeeze(-1).cpu().numpy()

@@ -31,11 +31,12 @@ def make_gp(
     If `train_yvar` is None we use a SingleTaskGP with a learned homoscedastic
     likelihood. Otherwise FixedNoiseGP with the given per-point variances.
     """
-    X = train_idx.unsqueeze(-1).float()
-    Y = train_y.unsqueeze(-1).float()
+    # BoTorch recommends double precision for numerical stability of GP fits.
+    X = train_idx.unsqueeze(-1).double()
+    Y = train_y.unsqueeze(-1).double()
 
-    kernel = AngularRBFKernel(angle_matrix=angle_matrix)
-    kernel.lengthscale = torch.tensor([initial_lengthscale])
+    kernel = AngularRBFKernel(angle_matrix=angle_matrix.double())
+    kernel.lengthscale = torch.tensor([initial_lengthscale], dtype=torch.float64)
 
     mean = ConstantMean()
     outcome_tf = Standardize(m=1)
@@ -53,7 +54,7 @@ def make_gp(
         )
     else:
         # Modern BoTorch unified FixedNoiseGP into SingleTaskGP via train_Yvar.
-        Yvar = train_yvar.unsqueeze(-1).float().clamp_min(1e-4)
+        Yvar = train_yvar.unsqueeze(-1).double().clamp_min(1e-4)
         model = SingleTaskGP(
             train_X=X, train_Y=Y, train_Yvar=Yvar,
             covar_module=kernel,

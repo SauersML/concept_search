@@ -19,7 +19,7 @@ def ucb_scores(
     beta: float = 2.0,
 ) -> torch.Tensor:
     """UCB(x) = mu(x) + sqrt(beta) * sigma(x), evaluated at every candidate."""
-    X = candidate_idx.unsqueeze(-1).float()
+    X = candidate_idx.unsqueeze(-1).double()
     model.eval()
     with torch.no_grad():
         posterior = model.posterior(X)
