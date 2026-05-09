@@ -64,7 +64,9 @@ def build_coactivation(
     sd = ckpt["state_dict"]
     W_enc = sd["W_enc"][feature_indices].float().contiguous()    # [N, d_model]
     b_enc = sd["b_enc"][feature_indices].float().contiguous()    # [N]
-    mean_vec = ckpt["mean"].float()                              # [d_model]
+    mean_obj = ckpt["mean"]
+    mean_vec = (mean_obj if torch.is_tensor(mean_obj)
+                else torch.from_numpy(np.asarray(mean_obj))).float()  # [d_model]
     d_model = mean_vec.shape[0]
     if W_enc.shape[1] != d_model:
         raise ValueError(f"W_enc dim {W_enc.shape[1]} != mean dim {d_model}")
