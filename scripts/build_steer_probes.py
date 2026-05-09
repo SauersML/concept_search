@@ -64,9 +64,14 @@ def main() -> None:
         feats = pick_default_features(args.labels, args.n_default_features)
 
     print(f"Building probes for {len(feats)} features:")
-    labels_df = load_labels(*args.labels)
+    labels_df = None
+    try:
+        labels_df = load_labels(*args.labels)
+    except FileNotFoundError as e:
+        print(f"  (label TSVs not present here, skipping rating annotations: {e})")
     for f in feats:
-        score = labels_df.loc[f, "score"] if f in labels_df.index else None
+        score = (labels_df.loc[f, "score"]
+                 if labels_df is not None and f in labels_df.index else None)
         print(f"  feat_{f}  rating={score}")
 
     print(f"\nLoading SAE checkpoint: {args.sae}")
