@@ -94,6 +94,42 @@ def make_intervention(
     }
 
 
+def commit_open_assistant(
+    segments: list[Segment],
+    open_text: str,
+    active_intervention: Optional[dict],
+) -> str:
+    """Close any in-progress assistant text as a Segment and return new open_text.
+
+    Invariant: every conversation transition that introduces a non-assistant
+    message (orchestrator-injected user nudges) MUST close the open assistant
+    text first, attaching the steering that was active when those tokens were
+    generated. Use this helper at every such boundary so we never glue a
+    user-message together with a still-open assistant under the wrong steering.
+    """
+    if open_text:
+        segments.append(Segment(
+            role="assistant", content=open_text,
+            intervention=active_intervention,
+        ))
+    return ""
+
+
+def inject_user(
+    segments: list[Segment],
+    open_text: str,
+    content: str,
+    *,
+    active_intervention: Optional[dict],
+) -> str:
+    """Inject an orchestrator user message; commits any open assistant first.
+
+    Returns the new open_text (always "")."""
+    open_text = commit_open_assistant(segments, open_text, active_intervention)
+    segments.append(Segment(role="user", content=content, intervention=None))
+    return open_text
+
+
 def to_messages(
     segments: list[Segment],
     current_assistant: Optional[tuple[str, Optional[dict]]] = None,
@@ -286,25 +322,19 @@ async def evaluate_feature(
             if open_text and text.startswith(open_text):
                 text = text[len(open_text):]
             if not text:
-                # Nothing new; treat as stop.
+                # Nothing new; treat as stop. Commit any open assistant.
                 finished_reason = why or "stop"
-                if open_text:
-                    segments.append(Segment(
-                        role="assistant", content=open_text,
-                        intervention=active_intervention,
-                    ))
+                open_text = commit_open_assistant(segments, open_text, active_intervention)
                 break
 
             open_text += text
             tokens_used_estimate += len(text.split())
 
             if why == "tool_call":
-                # Close current segment under the OLD steering, then update.
-                segments.append(Segment(
-                    role="assistant", content=open_text,
-                    intervention=active_intervention,
-                ))
-                open_text = ""
+                # Close the current assistant segment under the OLD steering
+                # (those tokens — including the tool call match itself —
+                # were generated under it). Then update the active steering.
+                open_text = commit_open_assistant(segments, open_text, active_intervention)
                 # Apply the *last* tool-call match this round (model may have
                 # written several; honor the most recent).
                 last_idx_str, last_strength_str = tool_calls[-1]
@@ -315,45 +345,39 @@ async def evaluate_feature(
                         probe_set_name, probe_index, active_strength, renorm=renorm,
                     )
                 if n_tool_calls >= max_tool_calls:
-                    # Force a final-answer round under steering=0.
+                    # Force a final-answer round under steering=0. open_text
+                    # is already "" from commit above; inject_user enforces it.
                     active_strength = 0.0
                     active_intervention = None
-                    segments.append(Segment(
-                        role="user", intervention=None,
-                        content=("Tool use limit reached. Your steering has been reset to 0. "
-                                 "Based on all your experimentation so far, provide your "
-                                 "final answer now in the format: Final answer: X "
-                                 "(where X is 0–100)."),
-                    ))
+                    open_text = inject_user(
+                        segments, open_text,
+                        ("Tool use limit reached. Your steering has been reset to 0. "
+                         "Based on all your experimentation so far, provide your "
+                         "final answer now in the format: Final answer: X "
+                         "(where X is 0–100)."),
+                        active_intervention=active_intervention,
+                    )
                     finished_reason = "max_tool_calls"
-                    # Continue the loop for one more round to elicit the answer.
                 continue
 
             if why == "repetition":
                 # Steering was too high; reset and ask for a final answer.
-                segments.append(Segment(
-                    role="assistant", content=open_text,
-                    intervention=active_intervention,
-                ))
-                open_text = ""
+                open_text = commit_open_assistant(segments, open_text, active_intervention)
                 active_strength = 0.0
                 active_intervention = None
-                segments.append(Segment(
-                    role="user", intervention=None,
-                    content=("You entered a repetition loop at that steering strength — "
-                             "it was too high. Your steering has been reset to 0. "
-                             "Try a lower strength value, or give your final answer in "
-                             "the format: Final answer: X (where X is 0–100)."),
-                ))
+                open_text = inject_user(
+                    segments, open_text,
+                    ("You entered a repetition loop at that steering strength — "
+                     "it was too high. Your steering has been reset to 0. "
+                     "Try a lower strength value, or give your final answer in "
+                     "the format: Final answer: X (where X is 0–100)."),
+                    active_intervention=active_intervention,
+                )
                 finished_reason = "repetition"
                 continue
 
             # Natural stop.
-            segments.append(Segment(
-                role="assistant", content=open_text,
-                intervention=active_intervention,
-            ))
-            open_text = ""
+            open_text = commit_open_assistant(segments, open_text, active_intervention)
             finished_reason = "stop"
             break
 
@@ -361,12 +385,17 @@ async def evaluate_feature(
         rating = _extract_rating(segments)
         if rating is None and finished_reason in ("stop", "max_tool_calls",
                                                   "repetition", "max_rounds"):
-            segments.append(Segment(
-                role="user", intervention=None,
-                content=("You did not provide a final answer. Your steering has been "
-                         "reset to 0. Provide your final answer now in the format: "
-                         "Final answer: X (where X is 0–100)."),
-            ))
+            # By construction open_text == "" at every loop exit point, but
+            # call inject_user (which commits first) to make the invariant hold.
+            active_strength = 0.0
+            active_intervention = None
+            open_text = inject_user(
+                segments, open_text,
+                ("You did not provide a final answer. Your steering has been "
+                 "reset to 0. Provide your final answer now in the format: "
+                 "Final answer: X (where X is 0–100)."),
+                active_intervention=active_intervention,
+            )
             msgs = to_messages(segments)
             text, _calls, why = await _stream_round(
                 client, server, msgs,

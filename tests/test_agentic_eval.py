@@ -13,6 +13,8 @@ from concept_search.agentic_eval import (
     Segment,
     _detect_repetition,
     _extract_rating,
+    commit_open_assistant,
+    inject_user,
     make_intervention,
     to_messages,
 )
@@ -110,6 +112,60 @@ def test_extract_rating_picks_last():
         Segment(role="assistant", content="…Final answer: 75"),
     ]
     assert _extract_rating(segs) == 75.0
+
+
+def test_commit_open_assistant_empty_is_noop():
+    segs = [Segment(role="system", content="s")]
+    new_open = commit_open_assistant(segs, "", None)
+    assert new_open == ""
+    assert len(segs) == 1
+
+
+def test_commit_open_assistant_attaches_intervention():
+    iv = make_intervention("sae_steer", 5, 50.0)
+    segs: list = []
+    new_open = commit_open_assistant(segs, "partial under +50", iv)
+    assert new_open == ""
+    assert len(segs) == 1
+    assert segs[0].role == "assistant"
+    assert segs[0].content == "partial under +50"
+    assert segs[0].intervention == iv
+
+
+def test_inject_user_commits_open_assistant_first():
+    """Boundary invariant: when the orchestrator injects a user message after
+    an in-progress assistant has accumulated text under steering, the open
+    text MUST close as a segment under that steering before the user message
+    appears in the conversation."""
+    iv = make_intervention("sae_steer", 5, 50.0)
+    segs = [
+        Segment(role="system", content="sys"),
+        Segment(role="user", content="usr"),
+    ]
+    open_text = "I notice X under +50"
+    open_text = inject_user(segs, open_text, "Tool limit reached.",
+                            active_intervention=iv)
+    assert open_text == ""
+    assert len(segs) == 4
+    assert segs[2].role == "assistant"
+    assert segs[2].content == "I notice X under +50"
+    assert segs[2].intervention == iv         # closed under OLD steering
+    assert segs[3].role == "user"
+    assert segs[3].content == "Tool limit reached."
+    assert segs[3].intervention is None       # user message has no steering
+
+
+def test_inject_user_with_no_open_text_just_appends_user():
+    segs = [
+        Segment(role="system", content="sys"),
+        Segment(role="user", content="usr"),
+        Segment(role="assistant", content="closed", intervention=None),
+    ]
+    open_text = inject_user(segs, "", "next nudge", active_intervention=None)
+    assert open_text == ""
+    assert len(segs) == 4
+    assert segs[3].role == "user"
+    assert segs[3].content == "next nudge"
 
 
 def test_extract_rating_none_when_missing():
