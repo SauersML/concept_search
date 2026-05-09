@@ -11,7 +11,11 @@ dependencies = [
     "scipy",
     "pandas",
     "httpx",
+    "matplotlib",
 ]
+
+[project.optional-dependencies]
+dev = ["pytest"]
 
 [build-system]
 requires = ["setuptools>=64"]

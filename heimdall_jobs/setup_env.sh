@@ -24,7 +24,8 @@ python -m pip install \
   "torch>=2.1" \
   "gpytorch>=1.11" \
   "botorch>=0.10" \
-  "numpy" "scipy" "pandas" "httpx"
+  "numpy" "scipy" "pandas" "httpx" \
+  "matplotlib" "pytest"
 
 cd "$REPO_DIR"
 python -m pip install -e .
