@@ -168,6 +168,23 @@ def test_inject_user_with_no_open_text_just_appends_user():
     assert segs[3].content == "next nudge"
 
 
+def test_extract_rating_handles_bisected_answer():
+    """Real-trace bug: the model emits 'steer_sae(idx, 0)\\n\\nFinal' which the
+    orchestrator cuts at the tool-call match, leaving 'Final' at the tail of
+    the closing segment and 'answer: 78' as the head of the next segment.
+    The rating extractor must search the concatenated assistant transcript so
+    the bisected 'Final\\nanswer: 78' is recovered."""
+    segs = [
+        Segment(role="system", content="sys"),
+        Segment(role="user", content="usr"),
+        Segment(role="assistant",
+                content='analysis\n\nsteer_sae("91759", 0)\n\nFinal',
+                intervention=None),
+        Segment(role="assistant", content="answer: 78\n", intervention=None),
+    ]
+    assert _extract_rating(segs) == 78.0
+
+
 def test_extract_rating_none_when_missing():
     segs = [
         Segment(role="system", content="…"),

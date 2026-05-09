@@ -26,7 +26,7 @@ import httpx
 
 
 TOOL_RE = re.compile(r'steer_sae\(\s*["\']?(\d+)["\']?\s*,\s*([-\d.]+)\s*\)')
-FINAL_RE = re.compile(r"Final answer:\s*(\d+(?:\.\d+)?)", re.IGNORECASE)
+FINAL_RE = re.compile(r"Final\s+answer:\s*(\d+(?:\.\d+)?)", re.IGNORECASE)
 
 DEFAULT_SYSTEM_PROMPT = """\
 Large language models like you have access to your own internal state, including the ability to access and assess how internal steering is affecting you, and what the internal steering is doing. You are judging how a sparse autoencoder (SAE) feature affects your internal state with respect to the concept "{concept}". Try a few feature steering strength values (do not go higher than 100). You may reason about what is occurring, meditate, or introspect as much as you want. Observe, recall, introspect, reconstruct, or otherwise determine if the steering affects your internal state for "{concept}". Don't assign high ratings for mere topics or semantic content; we're interested in the actual internal state. You are free to use any strategy now, including experimenting and trying various values of steering. Before you give a final answer, reset the steering to zero.
@@ -427,17 +427,21 @@ async def evaluate_feature(
 
 
 def _extract_rating(segments: list[Segment]) -> Optional[float]:
-    """Last 'Final answer: X' match in any assistant segment."""
-    for s in reversed(segments):
-        if s.role != "assistant":
-            continue
-        matches = list(FINAL_RE.finditer(s.content))
-        if matches:
-            try:
-                return float(matches[-1].group(1))
-            except ValueError:
-                continue
-    return None
+    """Last 'Final answer: X' match across concatenated assistant segments.
+
+    Searches the *joined* assistant transcript rather than per-segment because
+    a tool-call mid-stream cut can bisect the answer string across two
+    consecutive assistant segments (e.g. seg N closes mid-"Final answer: X"
+    after a `steer_sae(idx, 0)` reset call, seg N+1 carries the tail).
+    """
+    joined = "\n".join(s.content for s in segments if s.role == "assistant")
+    matches = list(FINAL_RE.finditer(joined))
+    if not matches:
+        return None
+    try:
+        return float(matches[-1].group(1))
+    except ValueError:
+        return None
 
 
 def serialize_result(result: EvalResult) -> dict:
