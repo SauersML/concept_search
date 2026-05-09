@@ -50,7 +50,8 @@ def build_command(args: argparse.Namespace) -> str:
         "source ~/miniconda/etc/profile.d/conda.sh && "
         f"conda activate {args.env_name} && "
         f"cd {args.repo_dir} && "
-        f"PYTHONPATH=src python scripts/phase_a_replay.py {py_args_str}"
+        f"PYTHONPATH=src PYTHONUNBUFFERED=1 "
+        f"python -u scripts/phase_a_replay.py {py_args_str}"
     )
 
 
