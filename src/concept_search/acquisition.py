@@ -37,14 +37,25 @@ def ucb_scores(
 def thompson_scores(
     model,
     candidate_idx: torch.Tensor,
-    rng: torch.Generator | None = None,
+    *,
+    seed: int | None = None,
 ) -> torch.Tensor:
-    """Single-draw Thompson sample over candidates."""
+    """Single-draw Thompson sample over candidates.
+
+    GPyTorchPosterior.rsample takes no `generator` argument, so we seed the
+    global torch RNG locally for reproducibility.
+    """
     X = candidate_idx.unsqueeze(-1).double()
     model.eval()
     with torch.no_grad():
-        posterior = model.posterior(X)
-        sample = posterior.rsample(torch.Size([1]), generator=rng)  # [1, M, 1]
+        if seed is not None:
+            with torch.random.fork_rng(devices=[]):
+                torch.manual_seed(seed)
+                posterior = model.posterior(X)
+                sample = posterior.rsample(torch.Size([1]))
+        else:
+            posterior = model.posterior(X)
+            sample = posterior.rsample(torch.Size([1]))
     return sample.squeeze(0).squeeze(-1)
 
 
@@ -68,9 +79,10 @@ def pick_next(
     rng: np.random.Generator | None = None,
 ) -> int:
     """Return one candidate ID to evaluate next, excluding already-observed."""
+    if rng is None:
+        rng = np.random.default_rng()
+
     if strategy == "random":
-        if rng is None:
-            rng = np.random.default_rng()
         unobs = [int(i) for i in candidate_idx.tolist() if int(i) not in observed_idx]
         if not unobs:
             raise RuntimeError("no unobserved candidates remain")
@@ -79,7 +91,10 @@ def pick_next(
     if strategy == "ucb":
         scores = ucb_scores(model, candidate_idx, beta=beta)
     elif strategy == "thompson":
-        scores = thompson_scores(model, candidate_idx)
+        # Derive a torch seed from the numpy rng so successive picks differ
+        # while remaining reproducible against `rng`.
+        seed = int(rng.integers(0, 2**31 - 1))
+        scores = thompson_scores(model, candidate_idx, seed=seed)
     else:
         raise ValueError(f"unknown strategy: {strategy}")
 
