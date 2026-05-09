@@ -21,7 +21,11 @@ def precompute_angles(decoder: torch.Tensor) -> torch.Tensor:
     returns: [N, N] of theta_ij in radians, on the same device as `decoder`.
     """
     cos = (decoder @ decoder.T).clamp(-1.0, 1.0)
-    return torch.arccos(cos)
+    angles = torch.arccos(cos)
+    # arccos(1 - eps) is small but nonzero in float32; force the diagonal to
+    # exactly 0 so the kernel evaluates to exactly 1 on the diagonal.
+    angles.fill_diagonal_(0.0)
+    return angles
 
 
 class AngularRBFKernel(Kernel):
