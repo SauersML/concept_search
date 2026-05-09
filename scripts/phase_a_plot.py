@@ -1,8 +1,8 @@
 """Plot Phase-A results: best-observed-by-step curve per strategy + posterior scatter.
 
-Reads summary.json + the per-replicate npz files written by phase_a_replay.py
+Reads summary.json + the per-strategy npz files written by phase_a_replay.py
 and saves two PNGs into the same directory:
-  best_observed_curves.png   median + IQR best-observed-vs-step per strategy
+  best_observed_curves.png   best-observed-vs-step per strategy
   posterior_vs_truth.png     scatter of posterior mean vs true score, faceted
                              by strategy. True top-20 highlighted.
 """
@@ -46,12 +46,9 @@ def plot_best_observed_curves(summary: dict, out_path: Path) -> None:
     strategies = list(summary["by_strategy"].keys())
     colors = plt.get_cmap("tab10").colors  # type: ignore[attr-defined]
     for color, s in zip(colors, strategies):
-        med = np.array(summary["by_strategy"][s]["best_observed_curve_median"])
-        p25 = np.array(summary["by_strategy"][s]["best_observed_curve_p25"])
-        p75 = np.array(summary["by_strategy"][s]["best_observed_curve_p75"])
-        x = np.arange(1, len(med) + 1)
-        ax.plot(x, med, color=color, label=s)
-        ax.fill_between(x, p25, p75, color=color, alpha=0.15, linewidth=0)
+        curve = np.array(summary["by_strategy"][s]["best_observed_curve"])
+        x = np.arange(1, len(curve) + 1)
+        ax.plot(x, curve, color=color, label=s)
 
     true_top = summary["true_top20_max"]
     ax.axhline(true_top, color="black", linestyle="--", linewidth=1, alpha=0.5)
@@ -74,10 +71,10 @@ def plot_posterior_vs_truth(input_dir: Path, summary: dict, out_path: Path) -> N
         axes = [axes]
 
     for ax, s in zip(axes, strategies):
-        npzs = sorted(input_dir.glob(f"rep*_{s}.npz"))
-        if not npzs:
+        npz = input_dir / f"{s}.npz"
+        if not npz.exists():
             continue
-        d = np.load(npzs[0])
+        d = np.load(npz)
         truth = d["truth_scores"]
         post = d["posterior_mean"]
 

@@ -25,7 +25,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--estimated-minutes", type=int, default=30)
     p.add_argument("--budget", type=int, default=100)
     p.add_argument("--seed-size", type=int, default=15)
-    p.add_argument("--n-replicates", type=int, default=3)
     p.add_argument("--noise-std", type=float, default=8.0)
     p.add_argument("--extra", default="",
                    help="Extra args appended to the python invocation.")
@@ -38,7 +37,6 @@ def build_command(args: argparse.Namespace) -> str:
     py_args = [
         "--budget", str(args.budget),
         "--seed-size", str(args.seed_size),
-        "--n-replicates", str(args.n_replicates),
         "--noise-std", str(args.noise_std),
         "--output-dir", "results/phase_a/$HEIMDALL_JOB_ID",
     ]

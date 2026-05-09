@@ -6,9 +6,9 @@ The random-search baseline is the right zero point for this kind of evaluation:
 it shows what we'd expect from no kernel structure at all.
 
 Outputs (per --output-dir):
-    summary.json                 aggregate metrics across replicates / strategies
-    rep{NN}_{strategy}.npz       observation history + final posterior per run
-    config.json                  reproducible argument record
+    summary.json      per-strategy metrics + the BO learning curve
+    {strategy}.npz    observation history + final posterior per strategy
+    config.json       reproducible argument record
 """
 
 from __future__ import annotations
@@ -51,7 +51,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--noise-std", type=float, default=8.0,
                    help="Phase-A homoscedastic obs noise (0–100 scale).")
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--n-replicates", type=int, default=5)
     p.add_argument("--strategies", nargs="+",
                    default=["ucb", "thompson", "random"])
     p.add_argument("--output-dir", default="results/phase_a")
@@ -98,22 +97,6 @@ def metrics_for_run(
     }
 
 
-def aggregate(per_run_metrics: list[dict]) -> dict:
-    """Median + IQR over replicates of each numeric metric."""
-    out: dict[str, dict[str, float]] = {}
-    keys = [k for k in per_run_metrics[0].keys() if k != "strategy"]
-    for k in keys:
-        vals = np.array([m[k] for m in per_run_metrics], dtype=np.float64)
-        out[k] = {
-            "median": float(np.median(vals)),
-            "p25": float(np.percentile(vals, 25)),
-            "p75": float(np.percentile(vals, 75)),
-            "min": float(vals.min()),
-            "max": float(vals.max()),
-        }
-    return out
-
-
 def main() -> None:
     args = parse_args()
 
@@ -147,67 +130,62 @@ def main() -> None:
           f"[{scores[np.argsort(-scores)[:20]].min():.0f}, "
           f"{scores[np.argsort(-scores)[:20]].max():.0f}]")
 
-    # Per-strategy storage.
-    runs_by_strategy: dict[str, list[dict]] = {s: [] for s in args.strategies}
-    boc_by_strategy: dict[str, list[np.ndarray]] = {s: [] for s in args.strategies}
+    # Strategies share the same seed-set and the same observation-noise draws
+    # so any difference between them is purely the acquisition rule.
+    seed_rng = np.random.default_rng(args.seed)
+    seed_idx = seed_rng.choice(
+        sae_lab.decoder.shape[0], size=args.seed_size, replace=False
+    ).tolist()
 
     overall_t0 = time.time()
-    for rep in range(args.n_replicates):
-        # Each replicate uses the same RNG seed across strategies for a fair
-        # comparison (same random seed-features, same observation-noise draws).
-        rep_seed = args.seed + rep
-        seed_rng = np.random.default_rng(rep_seed)
-        seed_idx = seed_rng.choice(
-            sae_lab.decoder.shape[0], size=args.seed_size, replace=False
-        ).tolist()
+    runs: dict[str, dict] = {}
+    boc_by_strategy: dict[str, list[float]] = {}
 
-        for strategy in args.strategies:
-            print(f"\n=== Replicate {rep} | strategy={strategy} | seed={rep_seed} ===")
-            obs_rng = np.random.default_rng(rep_seed)
-            observe, noise_var = make_observe(scores, args.noise_std, obs_rng)
-            t0 = time.time()
-            result = run_bo(
-                angle_matrix=angle,
-                candidate_idx=candidate_idx,
-                observe=observe,
-                seed_idx=seed_idx,
-                budget=args.budget,
-                strategy=strategy,
-                beta=args.beta,
-                initial_lengthscale=args.initial_lengthscale,
-                rng=np.random.default_rng(rep_seed + 1000),
-                homoscedastic_default_var=noise_var,
-            )
-            m = metrics_for_run(result, scores, truth_top20, args.seed_size)
-            print(
-                f"  spearman={m['spearman_rho']:+.3f}  "
-                f"recall@20={m['recall@20_of_top20']:.2f}  "
-                f"recall@50={m['recall@50_of_top20']:.2f}  "
-                f"best@25={m['best_observed_at_25']:.0f}  "
-                f"best@50={m['best_observed_at_50']:.0f}  "
-                f"best@100={m['best_observed_at_100']:.0f}  "
-                f"top20_post_mean={m['top20_mean_under_posterior']:.1f}  "
-                f"ls={m['final_lengthscale']:.3f}  "
-                f"({time.time() - t0:.1f}s)"
-            )
-            runs_by_strategy[strategy].append(m)
-            boc_by_strategy[strategy].append(best_observed_curve(result.observed_mean))
+    for strategy in args.strategies:
+        print(f"\n=== strategy={strategy} ===")
+        obs_rng = np.random.default_rng(args.seed)
+        observe, noise_var = make_observe(scores, args.noise_std, obs_rng)
+        t0 = time.time()
+        result = run_bo(
+            angle_matrix=angle,
+            candidate_idx=candidate_idx,
+            observe=observe,
+            seed_idx=seed_idx,
+            budget=args.budget,
+            strategy=strategy,
+            beta=args.beta,
+            initial_lengthscale=args.initial_lengthscale,
+            rng=np.random.default_rng(args.seed + 1000),
+            homoscedastic_default_var=noise_var,
+        )
+        m = metrics_for_run(result, scores, truth_top20, args.seed_size)
+        print(
+            f"  spearman={m['spearman_rho']:+.3f}  "
+            f"recall@20={m['recall@20_of_top20']:.2f}  "
+            f"recall@50={m['recall@50_of_top20']:.2f}  "
+            f"best@25={m['best_observed_at_25']:.0f}  "
+            f"best@50={m['best_observed_at_50']:.0f}  "
+            f"best@100={m['best_observed_at_100']:.0f}  "
+            f"top20_post_mean={m['top20_mean_under_posterior']:.1f}  "
+            f"ls={m['final_lengthscale']:.3f}  "
+            f"({time.time() - t0:.1f}s)"
+        )
+        runs[strategy] = m
+        boc_by_strategy[strategy] = best_observed_curve(result.observed_mean).tolist()
 
-            np.savez(
-                out_dir / f"rep{rep:02d}_{strategy}.npz",
-                observed_idx=np.array(result.observed_idx, dtype=np.int64),
-                observed_mean=np.array(result.observed_mean, dtype=np.float32),
-                observed_var=np.array(result.observed_var, dtype=np.float32),
-                posterior_mean=result.posterior_mean.astype(np.float32),
-                posterior_std=result.posterior_std.astype(np.float32),
-                truth_scores=scores,
-                feature_indices=sae_lab.feature_indices,
-                final_lengthscale=np.float32(result.final_lengthscale),
-                elapsed=np.float32(result.elapsed_seconds),
-                rep_seed=np.int64(rep_seed),
-            )
+        np.savez(
+            out_dir / f"{strategy}.npz",
+            observed_idx=np.array(result.observed_idx, dtype=np.int64),
+            observed_mean=np.array(result.observed_mean, dtype=np.float32),
+            observed_var=np.array(result.observed_var, dtype=np.float32),
+            posterior_mean=result.posterior_mean.astype(np.float32),
+            posterior_std=result.posterior_std.astype(np.float32),
+            truth_scores=scores,
+            feature_indices=sae_lab.feature_indices,
+            final_lengthscale=np.float32(result.final_lengthscale),
+            elapsed=np.float32(result.elapsed_seconds),
+        )
 
-    # Aggregate + write summary.
     summary = {
         "args": vars(args),
         "n_active": int(sae.decoder.shape[0]),
@@ -218,17 +196,8 @@ def main() -> None:
         "elapsed_total": time.time() - overall_t0,
         "by_strategy": {
             s: {
-                "aggregate": aggregate(runs_by_strategy[s]),
-                "best_observed_curve_median": np.median(
-                    np.stack(boc_by_strategy[s]), axis=0
-                ).tolist(),
-                "best_observed_curve_p25": np.percentile(
-                    np.stack(boc_by_strategy[s]), 25, axis=0
-                ).tolist(),
-                "best_observed_curve_p75": np.percentile(
-                    np.stack(boc_by_strategy[s]), 75, axis=0
-                ).tolist(),
-                "per_run": runs_by_strategy[s],
+                "metrics": runs[s],
+                "best_observed_curve": boc_by_strategy[s],
             }
             for s in args.strategies
         },
@@ -236,8 +205,7 @@ def main() -> None:
     with open(out_dir / "summary.json", "w") as f:
         json.dump(summary, f, indent=2)
 
-    # Console summary table.
-    print("\n=== Summary (medians across replicates) ===")
+    print("\n=== Summary ===")
     cols = ["spearman_rho", "recall@20_of_top20", "recall@50_of_top20",
             "best_observed_at_25", "best_observed_at_50", "best_observed_at_100",
             "top20_mean_under_posterior"]
@@ -246,8 +214,8 @@ def main() -> None:
     print("  " + "  ".join(h.rjust(w) for h, w in zip(header, widths)))
     print("  " + "  ".join("-" * w for w in widths))
     for s in args.strategies:
-        agg = summary["by_strategy"][s]["aggregate"]
-        row = [s] + [f"{agg[c]['median']:.3f}" for c in cols]
+        m = runs[s]
+        row = [s] + [f"{m[c]:.3f}" for c in cols]
         print("  " + "  ".join(v.rjust(w) for v, w in zip(row, widths)))
     print(f"\n  output -> {out_dir.resolve()}")
 
