@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import time
 from pathlib import Path
 
@@ -84,36 +83,19 @@ async def encode_per_token(
         "skip_tokens": 0,
         "mask": "all",
     }
-    r = await client.post(f"{server}/v1/encode", json=body, timeout=180.0)
+    r = await client.post(f"{server}/v1/encode", json=body, timeout=300.0)
     r.raise_for_status()
     payload = r.json()
-    # The encode response shape is implementation-specific; pull the per-token
-    # hidden states for the requested layer. Common shapes:
-    #   {"hidden_states": {"40": [[...]]}}                     (per layer)
-    #   {"results": [{"hidden_states": {"40": [...]}}]}        (per request)
-    candidates = []
-    if "hidden_states" in payload:
-        hs = payload["hidden_states"]
-        if isinstance(hs, dict):
-            arr = hs.get(str(layer)) or hs.get(layer)
-            candidates.append(arr)
-    if "results" in payload:
-        for rec in payload["results"]:
-            hs = rec.get("hidden_states") or rec.get("activations") or {}
-            arr = hs.get(str(layer)) if isinstance(hs, dict) else None
-            if arr is not None:
-                candidates.append(arr)
-    if "activations" in payload:
-        ac = payload["activations"]
-        if isinstance(ac, dict):
-            arr = ac.get(str(layer)) or ac.get(layer)
-            candidates.append(arr)
-    arr = next((a for a in candidates if a is not None), None)
-    if arr is None:
-        raise RuntimeError(f"could not find layer-{layer} hidden states in "
-                           f"encode response keys={list(payload.keys())}")
-    a = np.asarray(arr, dtype=np.float32)
-    # Normalize to [n_tokens, d_model] by dropping any leading singleton.
+    # Server response shape (verified against probe_server_vllm):
+    #   {"results": [ {"layer_40": [[d_model], ...]} , ... ], ...}
+    if "results" not in payload or not payload["results"]:
+        raise RuntimeError(f"no results in encode response: {list(payload.keys())}")
+    rec = payload["results"][0]
+    key = f"layer_{layer}"
+    if key not in rec:
+        raise RuntimeError(f"layer key {key!r} missing in result; got "
+                           f"{list(rec.keys())}")
+    a = np.asarray(rec[key], dtype=np.float32)
     while a.ndim > 2:
         a = a[0]
     return a
