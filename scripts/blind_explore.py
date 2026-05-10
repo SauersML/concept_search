@@ -50,6 +50,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max-rounds", type=int, default=25)
     p.add_argument("--max-tool-calls", type=int, default=15)
     p.add_argument("--max-tokens", type=int, default=6000)
+    p.add_argument("--prompt-file", default=None,
+                   help="Custom system prompt template (uses {feature_idx}). "
+                        "Defaults to the BLIND_PROMPT in this script.")
     p.add_argument("--output-dir", required=True)
     return p.parse_args()
 
@@ -76,7 +79,12 @@ async def main_async() -> None:
     probe_index = await fetch_probe_index(args.server, args.probe_set, args.feature_idx)
     print(f"feat_{args.feature_idx} -> probe_index={probe_index}")
 
-    print("Running blind exploration ...")
+    if args.prompt_file:
+        prompt_template = Path(args.prompt_file).read_text()
+    else:
+        prompt_template = BLIND_PROMPT
+
+    print(f"Running blind exploration (prompt_chars={len(prompt_template)}) ...")
     result = await evaluate_feature(
         probe_index=probe_index,
         feature_idx=args.feature_idx,
@@ -84,7 +92,7 @@ async def main_async() -> None:
         probe_set_name=args.probe_set,
         # Pass the blind prompt with concept blanked out.
         concept="",                 # not referenced in the custom prompt
-        system_prompt=BLIND_PROMPT,
+        system_prompt=prompt_template,
         user_prompt="Begin your exploration now.",
         max_rounds=args.max_rounds,
         max_tool_calls=args.max_tool_calls,
