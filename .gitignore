@@ -9,3 +9,4 @@ results/runs/
 *.npz
 *.pt
 !tests/fixtures/*.npz
+.DS_Store
