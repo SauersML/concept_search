@@ -53,6 +53,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--batch-size", type=int, default=8,
                    help="Number of transcripts per /v1/encode call (server "
                         "batches them in continuous-batching prefill).")
+    p.add_argument("--save-dir", default="/dev/shm/coact_encode",
+                   help="Directory the server writes per-request binary .npy "
+                        "files to. Must be reachable from this script (we "
+                        "read the files back from disk to avoid 2GB JSON "
+                        "responses).")
     p.add_argument("--output", default="results/coactivation_transcripts.npz")
     return p.parse_args()
 
@@ -68,19 +73,26 @@ def load_transcripts(tsv_paths: list[str]) -> dict[int, str]:
     return {int(r.feature_idx): str(r.response) for r in df.itertuples()}
 
 
-async def encode_batch(
+async def encode_batch_binary(
     client: httpx.AsyncClient,
     server: str,
     texts: list[str],
+    save_dir: Path,
     max_length: int,
     layer: int,
 ) -> list[np.ndarray]:
-    """Hit /v1/encode with a batch of texts; return list of [n_tokens_i, d_model]."""
+    """Hit /v1/encode with a batch and read back binary .npy from save_dir.
+
+    The server writes one file per text — `<rid>_layer{N}.npy` — and the
+    JSON response just contains the filenames. This avoids serializing
+    millions of floats as JSON, which is the bottleneck of the text path.
+    """
     body = {
         "texts": texts,
         "layers": [layer],
         "aggregate": "tokens",
         "max_length": max_length,
+        "save_dir": str(save_dir),
         "skip_tokens": 0,
         "mask": "all",
     }
@@ -92,13 +104,20 @@ async def encode_batch(
     key = f"layer_{layer}"
     out: list[np.ndarray] = []
     for rec in payload["results"]:
-        if key not in rec:
-            raise RuntimeError(f"layer key {key!r} missing; got "
-                               f"{list(rec.keys())}")
-        a = np.asarray(rec[key], dtype=np.float32)
-        while a.ndim > 2:
-            a = a[0]
-        out.append(a)
+        info = rec.get(key)
+        if not info or info.get("n_tokens", 0) == 0:
+            out.append(np.zeros((0, 0), dtype=np.float32))
+            continue
+        fname = info.get("file")
+        if not fname:
+            raise RuntimeError(f"layer info missing 'file': {info}")
+        arr = np.load(save_dir / fname).astype(np.float32, copy=False)
+        out.append(arr)
+        # Clean up the npy as soon as we've read it.
+        try:
+            (save_dir / fname).unlink()
+        except FileNotFoundError:
+            pass
     return out
 
 
@@ -159,9 +178,18 @@ async def main_async() -> None:
         device = torch.device("cpu")
         print("  encoder on cpu")
 
+    save_dir = Path(args.save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+    # Wipe any leftover files from a prior run.
+    for old in save_dir.glob("*.npy"):
+        try:
+            old.unlink()
+        except FileNotFoundError:
+            pass
+
     # Encode in server-side batches so vLLM can prefill them concurrently.
     print(f"\nEncoding {n_features} transcripts via {args.server}/v1/encode "
-          f"(batch_size={args.batch_size}) ...")
+          f"(batch_size={args.batch_size}, binary save_dir={save_dir}) ...")
     V = torch.zeros(n_features, n_features, dtype=torch.float64)
     n_tokens_used = np.zeros(n_features, dtype=np.int64)
     t0 = time.time()
@@ -172,8 +200,8 @@ async def main_async() -> None:
             batch_texts = [all_transcripts[f] for f in batch_feats]
 
             try:
-                batch_residuals = await encode_batch(
-                    client, args.server, batch_texts,
+                batch_residuals = await encode_batch_binary(
+                    client, args.server, batch_texts, save_dir,
                     max_length=args.max_tokens_per_transcript,
                     layer=40,
                 )
