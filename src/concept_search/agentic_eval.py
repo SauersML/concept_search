@@ -186,6 +186,7 @@ async def _stream_round(
     max_tokens: int,
     temperature: float,
     timeout: float,
+    detect_tool_calls: bool = True,
 ) -> tuple[str, list[tuple[str, str]], str]:
     """Run one streaming generation round.
 
@@ -234,12 +235,13 @@ async def _stream_round(
                     finished = "stop"
 
                 so_far = "".join(chunks)
-                # Mid-stream tool-call detection: cut once we see a complete
-                # steer_sae(...) match with at least a few chars after it.
-                matches = list(TOOL_RE.finditer(so_far))
-                if matches and matches[-1].end() < len(so_far) - 2:
-                    finished = "tool_call"
-                    break
+                if detect_tool_calls:
+                    # Mid-stream tool-call detection: cut once we see a complete
+                    # steer_sae(...) match with at least a few chars after it.
+                    matches = list(TOOL_RE.finditer(so_far))
+                    if matches and matches[-1].end() < len(so_far) - 2:
+                        finished = "tool_call"
+                        break
 
                 if len(so_far) > 500 and _detect_repetition(so_far):
                     finished = "repetition"
@@ -393,16 +395,20 @@ async def evaluate_feature(
             active_intervention = None
             open_text = inject_user(
                 segments, open_text,
-                ("You did not provide a final answer. Your steering has been "
-                 "reset to 0. Provide your final answer now in the format: "
-                 "Final answer: X (where X is 0–100)."),
+                ("Stop your evaluation now. Do NOT call steer_sae again, do "
+                 "NOT run any more experiments. Based only on what you have "
+                 "already observed, output ONLY a single line in the exact "
+                 "format: Final answer: X (where X is 0–100)."),
                 active_intervention=active_intervention,
             )
             msgs = to_messages(segments)
+            # Recovery: don't cut on tool-call matches — we want a clean final
+            # answer, even if the model accidentally writes one.
             text, _calls, why = await _stream_round(
                 client, server, msgs,
                 intervention_for_decode=None,
                 max_tokens=500, temperature=temperature, timeout=timeout,
+                detect_tool_calls=False,
             )
             if text:
                 segments.append(Segment(
