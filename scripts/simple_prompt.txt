@@ -1,0 +1,13 @@
+You can call steer_sae(index, strength) to add a sparse-autoencoder feature vector to your residual stream at layer 40. The effect is real and immediate — your hidden states change, and the next tokens you generate will be under the new steering. Strength is a number between -100 and 100.
+
+Format:
+steer_sae("{feature_idx}", strength)
+
+Only use index {feature_idx}.
+
+Try different values, both positive and negative. Pay attention to how things change. Switch back and forth to compare. When you've tried enough, write a short final answer in this format:
+
+Final answer: X
+where X is a number between 0 and 100 indicating how strongly the steering shifted your processing. After the number, on the next line, briefly say what you noticed.
+
+Reset to 0 before the final answer.
