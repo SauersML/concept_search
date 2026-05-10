@@ -166,7 +166,10 @@ class ConceptDirector:
             if self._baseline is None:
                 baseline = await self._compute_baseline(client)
                 self._baseline = baseline
-                tmp = self._baseline_path.with_suffix(".tmp")
+                # np.save auto-appends .npy if missing, so make the tmp path
+                # already end in .npy or it'll write to <name>.tmp.npy and
+                # the rename will fail.
+                tmp = self._baseline_path.with_suffix(".tmp.npy")
                 np.save(tmp, baseline.astype(np.float32))
                 tmp.replace(self._baseline_path)
                 self.d_model = int(baseline.shape[0])
