@@ -335,22 +335,39 @@ async def evaluate_feature(
             tokens_used_estimate += len(text.split())
 
             if why == "tool_call":
-                # Close the current assistant segment under the OLD steering
-                # (those tokens — including the tool call match itself —
-                # were generated under it). Then update the active steering.
-                open_text = commit_open_assistant(segments, open_text, active_intervention)
-                # Apply the *last* tool-call match this round (model may have
-                # written several; honor the most recent).
+                # Decide if the strength actually changed. The model often
+                # writes the same tool call multiple times (markdown headers
+                # like `**Test 1: steer_sae(idx, 50)**`, then a fresh
+                # "steer_sae(idx, 50)" line). Each match is detected by the
+                # streaming regex, but only a *change* is a real intent —
+                # repeats at the same strength should not close a segment or
+                # eat into max_tool_calls. Closing every time also creates
+                # short turns that confuse the model into emitting EOS (the
+                # multi-assistant chat-template structure makes new turns
+                # look like fresh prompts, where short outputs are normal).
                 last_idx_str, last_strength_str = tool_calls[-1]
-                n_tool_calls += len(tool_calls)
                 if int(last_idx_str) == int(eff_feature_idx):
-                    active_strength = float(last_strength_str)
+                    requested_strength = float(last_strength_str)
+                else:
+                    requested_strength = active_strength
+
+                if abs(requested_strength - active_strength) > 0.01:
+                    # Real strength change. Close the current segment under
+                    # the OLD steering, update active, count this transition.
+                    open_text = commit_open_assistant(
+                        segments, open_text, active_intervention)
+                    n_tool_calls += 1
+                    active_strength = requested_strength
                     active_intervention = make_intervention(
-                        probe_set_name, probe_index, active_strength, renorm=renorm,
+                        probe_set_name, probe_index, active_strength,
+                        renorm=renorm,
                     )
+                # else: same-strength repeat. Keep open_text accumulating
+                # under the unchanged steering; don't touch n_tool_calls,
+                # don't break the segment, just resume streaming.
+
                 if n_tool_calls >= max_tool_calls:
-                    # Force a final-answer round under steering=0. open_text
-                    # is already "" from commit above; inject_user enforces it.
+                    # Force a final-answer round under steering=0.
                     active_strength = 0.0
                     active_intervention = None
                     open_text = inject_user(
