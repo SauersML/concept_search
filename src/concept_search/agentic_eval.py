@@ -336,6 +336,7 @@ async def evaluate_feature(
     placebo: bool = False,
     director=None,
     director_probe_set_name: str = "live_concepts",
+    require_final_answer: bool = True,
 ) -> EvalResult:
     """Run one full agentic eval for one feature, with K,V-faithful steering.
 
@@ -523,8 +524,10 @@ async def evaluate_feature(
 
         # If we ran out of rounds with no final answer, give one more chance.
         rating = _extract_rating(segments)
-        if rating is None and finished_reason in ("stop", "max_tool_calls",
-                                                  "repetition", "max_rounds"):
+        if (require_final_answer
+                and rating is None
+                and finished_reason in ("stop", "max_tool_calls",
+                                        "repetition", "max_rounds")):
             # By construction open_text == "" at every loop exit point, but
             # call inject_user (which commits first) to make the invariant hold.
             active_strength = 0.0

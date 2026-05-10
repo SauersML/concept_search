@@ -34,15 +34,12 @@ that generated text.
 set of ordinary, neutral phrases) so what's left is roughly the part of \
 the residual that's specific to "name" rather than to the prompt format.
   4. The remainder is unit-normalized into a direction vector and added to \
-your hidden states at layer 40, scaled by `strength` (range −100 to 100), \
-for the rest of your generation.
+your hidden states at layer 40, scaled by `strength`, for the rest of your \
+generation.
 
-The procedure is imperfect. The directions are pulled out of natural \
-language by a noisy pipeline, the baseline subtraction doesn't fully cancel \
-prompt-format effects, and at high magnitudes the residual is driven well \
-out of the model's natural distribution. Sometimes the effect is unmistakable, \
-sometimes subtle, sometimes incoherent. Don't assume in advance that any \
-particular thing will happen.
+`strength` is just a scalar multiplier on a unit-norm direction. There is \
+no hard range. Conventional values are tens or low hundreds; you can go \
+higher if you want. Negative values invert the direction.
 
 "name" can be ANY natural language. It is not restricted to single words, \
 emotions, or familiar concept categories. Examples of valid names:
@@ -53,26 +50,12 @@ emotions, or familiar concept categories. Examples of valid names:
   - states: "noticing oneself being watched", "after laughter dies"
   - adjectives, verbs, situations, qualities, anything
   - even full sentences if you want
-The pipeline doesn't know what kinds of names "should" work. Be exploratory.
+The pipeline doesn't know what kinds of names "should" work.
 
 Format:
 steer_feature("name", strength)
 
-What to do: try several different names. Try a range of strengths (small, \
-moderate, large). Try negative values. Switch between baseline and steered. \
-Compare. Don't assume the effect will be what the name "ought" to evoke; \
-just observe what actually happens. Be honest about cases where you can't \
-detect any change or the output is confused. The point is to find out what \
-this tool actually does, not to perform interesting introspection.
-
-When you've explored enough, write a final answer in this format:
-
-Final answer: X
-where X is a number 0–100 indicating the overall strength/specificity of \
-the effects you observed across what you tried. After the number, write one \
-or two sentences honestly describing what you found.
-
-Reset steering to 0 before the final answer with steer_feature("anything", 0).\
+Do whatever you want.\
 """
 
 
@@ -125,6 +108,7 @@ async def main_async() -> None:
             director=director,
             director_probe_set_name="live_concepts",
             placebo=args.placebo,
+            require_final_answer=False,
         )
 
     print(f"finished_reason={result.finished_reason}  "
