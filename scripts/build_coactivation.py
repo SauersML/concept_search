@@ -45,6 +45,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--batch-size", type=int, default=4096)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--output", default="results/coactivation_k25_labeled.npz")
+    p.add_argument("--feature-indices", type=int, nargs="+", default=None,
+                   help="Specific SAE feature indices to coactivate. If "
+                        "omitted, falls back to (active ∩ labeled).")
+    p.add_argument("--top-by-fire-count", type=int, default=None,
+                   help="Take the top-K active features by fire count from "
+                        "the persistence cache. Mutually exclusive with "
+                        "--feature-indices and --labels.")
     return p.parse_args()
 
 
@@ -53,12 +60,25 @@ def main() -> None:
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    print("Loading active features + labels...")
-    sae = load_sae_decoder(args.sae, args.persistence)
-    labels = load_labels(*args.labels)
-    label_set = set(labels.index.tolist())
-    keep = [int(i) for i in sae.feature_indices if int(i) in label_set]
-    print(f"  {len(keep)} features to coactivate (active ∩ labeled)")
+    if args.feature_indices is not None:
+        keep = [int(i) for i in args.feature_indices]
+        print(f"  {len(keep)} explicit features specified")
+    elif args.top_by_fire_count is not None:
+        sae = load_sae_decoder(args.sae, args.persistence)
+        order = np.argsort(-sae.fire_counts)
+        k = min(int(args.top_by_fire_count), len(order))
+        chosen = sae.feature_indices[order[:k]]
+        keep = [int(i) for i in chosen]
+        print(f"  top-{k} features by fire count: "
+              f"min={sae.fire_counts[order[k-1]]} "
+              f"max={sae.fire_counts[order[0]]}")
+    else:
+        print("Loading active features + labels...")
+        sae = load_sae_decoder(args.sae, args.persistence)
+        labels = load_labels(*args.labels)
+        label_set = set(labels.index.tolist())
+        keep = [int(i) for i in sae.feature_indices if int(i) in label_set]
+        print(f"  {len(keep)} features to coactivate (active ∩ labeled)")
 
     print(f"Building coactivation on {args.n_tokens} tokens...")
     t0 = time.time()
