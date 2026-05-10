@@ -21,26 +21,58 @@ from concept_search.concept_resolver import ConceptDirector
 
 
 SYSTEM_PROMPT = """\
-You can call steer_feature("name", strength) to inject a concept-direction \
-into your residual stream at layer 40. The "name" is any natural-language \
-concept (a noun, an adjective, a state, anything). When you call it, the system \
-generates short text embodying that concept, takes the mean residual, subtracts \
-a neutral baseline, and adds the resulting unit-vector direction multiplied by \
-strength to your hidden states. The effect is real — your generation will \
-proceed under that steering. Strength is between -100 and 100.
+You have a steering tool: steer_feature("name", strength). Here is exactly \
+what it does, mechanically:
+
+  1. The system you're running on takes the string "name" and prompts a \
+copy of you (or another model) to generate roughly 300 tokens of text from \
+several different framings of "name" (e.g. "Embody {name}.", "Speak as \
+{name}.", "Describe {name}.").
+  2. It captures the mean layer-40 residual-stream activation across all \
+that generated text.
+  3. It subtracts a precomputed baseline (the same procedure run once on a \
+set of ordinary, neutral phrases) so what's left is roughly the part of \
+the residual that's specific to "name" rather than to the prompt format.
+  4. The remainder is unit-normalized into a direction vector and added to \
+your hidden states at layer 40, scaled by `strength` (range −100 to 100), \
+for the rest of your generation.
+
+The procedure is imperfect. The directions are pulled out of natural \
+language by a noisy pipeline, the baseline subtraction doesn't fully cancel \
+prompt-format effects, and at high magnitudes the residual is driven well \
+out of the model's natural distribution. Sometimes the effect is unmistakable, \
+sometimes subtle, sometimes incoherent. Don't assume in advance that any \
+particular thing will happen.
+
+"name" can be ANY natural language. It is not restricted to single words, \
+emotions, or familiar concept categories. Examples of valid names:
+  - single words: "anger", "stone", "infinity"
+  - phrases: "the moment before sleep", "an unfinished sentence"
+  - very specific concepts: "the dust on a high bookshelf in summer"
+  - abstract or recondite ideas: "the apophatic", "the negation of preference"
+  - states: "noticing oneself being watched", "after laughter dies"
+  - adjectives, verbs, situations, qualities, anything
+  - even full sentences if you want
+The pipeline doesn't know what kinds of names "should" work. Be exploratory.
 
 Format:
 steer_feature("name", strength)
 
-Try several concepts at several strengths. Switch between concepts. Switch \
-back and forth between baseline and steered. Pay attention to what changes \
-in your processing — word choice, tone, the kinds of thoughts that surface, \
-the texture of your attention. Be specific.
+What to do: try several different names. Try a range of strengths (small, \
+moderate, large). Try negative values. Switch between baseline and steered. \
+Compare. Don't assume the effect will be what the name "ought" to evoke; \
+just observe what actually happens. Be honest about cases where you can't \
+detect any change or the output is confused. The point is to find out what \
+this tool actually does, not to perform interesting introspection.
 
-Reset to 0 before your final answer with steer_feature("anything", 0). At \
-the end, write Final answer: X (a number 0-100 indicating the strength of \
-the overall effect across what you tried) and one short sentence describing \
-your overall observation.
+When you've explored enough, write a final answer in this format:
+
+Final answer: X
+where X is a number 0–100 indicating the overall strength/specificity of \
+the effects you observed across what you tried. After the number, write one \
+or two sentences honestly describing what you found.
+
+Reset steering to 0 before the final answer with steer_feature("anything", 0).\
 """
 
 
