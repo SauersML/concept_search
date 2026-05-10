@@ -131,11 +131,15 @@ def save(result: CoactivationResult, path: str | Path) -> None:
 
 def load(path: str | Path) -> CoactivationResult:
     d = np.load(path, allow_pickle=False)
+    n_tok = d["n_tokens_used"]
+    # corpus-coact saves a scalar; transcripts-coact saves a per-feature
+    # array. Normalize to total tokens used.
+    n_tokens_total = int(n_tok.sum()) if n_tok.ndim > 0 else int(n_tok)
     return CoactivationResult(
         angles=d["angles"],
         cosine=d["cosine"],
         feature_indices=d["feature_indices"],
-        n_tokens_used=int(d["n_tokens_used"]),
+        n_tokens_used=n_tokens_total,
         sae_path=str(d["sae_path"]),
         activations_path=str(d["activations_path"]),
     )
