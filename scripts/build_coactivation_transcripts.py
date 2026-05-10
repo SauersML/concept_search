@@ -50,8 +50,9 @@ def parse_args() -> argparse.Namespace:
                    help="Path to a file with one feature index per line "
                         "(used if --feature-indices not given).")
     p.add_argument("--max-tokens-per-transcript", type=int, default=8192)
-    p.add_argument("--batch-size", type=int, default=4,
-                   help="Number of transcripts per /v1/encode call.")
+    p.add_argument("--batch-size", type=int, default=8,
+                   help="Number of transcripts per /v1/encode call (server "
+                        "batches them in continuous-batching prefill).")
     p.add_argument("--output", default="results/coactivation_transcripts.npz")
     return p.parse_args()
 
@@ -67,38 +68,38 @@ def load_transcripts(tsv_paths: list[str]) -> dict[int, str]:
     return {int(r.feature_idx): str(r.response) for r in df.itertuples()}
 
 
-async def encode_per_token(
+async def encode_batch(
     client: httpx.AsyncClient,
     server: str,
-    text: str,
+    texts: list[str],
     max_length: int,
     layer: int,
-) -> np.ndarray:
-    """Hit /v1/encode for one transcript; return [n_tokens, d_model] float32."""
+) -> list[np.ndarray]:
+    """Hit /v1/encode with a batch of texts; return list of [n_tokens_i, d_model]."""
     body = {
-        "texts": [text],
+        "texts": texts,
         "layers": [layer],
         "aggregate": "tokens",
         "max_length": max_length,
         "skip_tokens": 0,
         "mask": "all",
     }
-    r = await client.post(f"{server}/v1/encode", json=body, timeout=300.0)
+    r = await client.post(f"{server}/v1/encode", json=body, timeout=600.0)
     r.raise_for_status()
     payload = r.json()
-    # Server response shape (verified against probe_server_vllm):
-    #   {"results": [ {"layer_40": [[d_model], ...]} , ... ], ...}
     if "results" not in payload or not payload["results"]:
         raise RuntimeError(f"no results in encode response: {list(payload.keys())}")
-    rec = payload["results"][0]
     key = f"layer_{layer}"
-    if key not in rec:
-        raise RuntimeError(f"layer key {key!r} missing in result; got "
-                           f"{list(rec.keys())}")
-    a = np.asarray(rec[key], dtype=np.float32)
-    while a.ndim > 2:
-        a = a[0]
-    return a
+    out: list[np.ndarray] = []
+    for rec in payload["results"]:
+        if key not in rec:
+            raise RuntimeError(f"layer key {key!r} missing; got "
+                               f"{list(rec.keys())}")
+        a = np.asarray(rec[key], dtype=np.float32)
+        while a.ndim > 2:
+            a = a[0]
+        out.append(a)
+    return out
 
 
 def load_sae_encoder_subset(sae_path: str, feature_indices: np.ndarray):
@@ -145,41 +146,63 @@ async def main_async() -> None:
     print(f"  W_enc: {tuple(W_enc.shape)}  b_enc: {tuple(b_enc.shape)}  "
           f"mean: {tuple(mean_vec.shape)}")
 
-    # Encode each transcript and pool feature activations.
-    print(f"\nEncoding {n_features} transcripts via {args.server}/v1/encode ...")
+    # Move encoder onto GPU if available — the per-transcript matmul dominates
+    # local CPU time and there's plenty of free GPU besides the running probe
+    # server.
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+        W_enc = W_enc.to(device)
+        b_enc = b_enc.to(device)
+        mean_vec = mean_vec.to(device)
+        print(f"  encoder on cuda ({torch.cuda.get_device_name(0)})")
+    else:
+        device = torch.device("cpu")
+        print("  encoder on cpu")
+
+    # Encode in server-side batches so vLLM can prefill them concurrently.
+    print(f"\nEncoding {n_features} transcripts via {args.server}/v1/encode "
+          f"(batch_size={args.batch_size}) ...")
     V = torch.zeros(n_features, n_features, dtype=torch.float64)
     n_tokens_used = np.zeros(n_features, dtype=np.int64)
     t0 = time.time()
     async with httpx.AsyncClient() as client:
-        for i, feat in enumerate(feats):
-            text = all_transcripts[feat]
+        for batch_start in range(0, n_features, args.batch_size):
+            batch_end = min(batch_start + args.batch_size, n_features)
+            batch_feats = feats[batch_start:batch_end]
+            batch_texts = [all_transcripts[f] for f in batch_feats]
+
             try:
-                residuals_np = await encode_per_token(
-                    client, args.server, text,
+                batch_residuals = await encode_batch(
+                    client, args.server, batch_texts,
                     max_length=args.max_tokens_per_transcript,
                     layer=40,
                 )
             except Exception as e:
-                print(f"  [{i+1}/{n_features}] feat_{feat}: encode failed "
-                      f"({type(e).__name__}: {e}); leaving v_i = 0",
+                print(f"  [{batch_start+1}-{batch_end}/{n_features}] encode "
+                      f"failed ({type(e).__name__}: {e})",
                       flush=True)
                 continue
 
-            residuals = torch.from_numpy(residuals_np).float()
-            if residuals.ndim != 2 or residuals.shape[1] != mean_vec.shape[0]:
-                print(f"  [{i+1}/{n_features}] feat_{feat}: unexpected shape "
-                      f"{tuple(residuals.shape)}; skip", flush=True)
-                continue
-            x_centered = residuals - mean_vec
-            pre = torch.relu(x_centered @ W_enc.T + b_enc)  # [n_tokens, n_features]
-            V[i] = pre.mean(dim=0).double()
-            n_tokens_used[i] = residuals.shape[0]
+            for j, (feat, res_np) in enumerate(zip(batch_feats, batch_residuals)):
+                i = batch_start + j
+                residuals = torch.from_numpy(res_np).float().to(device)
+                if residuals.ndim != 2 or residuals.shape[1] != mean_vec.shape[0]:
+                    print(f"  feat_{feat}: unexpected shape "
+                          f"{tuple(residuals.shape)}; skip", flush=True)
+                    continue
+                x_centered = residuals - mean_vec
+                pre = torch.relu(x_centered @ W_enc.T + b_enc)
+                V[i] = pre.mean(dim=0).double().cpu()
+                n_tokens_used[i] = residuals.shape[0]
 
-            if (i + 1) % 25 == 0 or (i + 1) == n_features:
-                rate = (i + 1) / (time.time() - t0)
-                print(f"  encoded {i+1}/{n_features} ({rate:.2f} tx/s, "
-                      f"avg {n_tokens_used[:i+1].mean():.0f} tokens/tx)",
-                      flush=True)
+            done = batch_end
+            elapsed = time.time() - t0
+            rate = done / elapsed if elapsed > 0 else 0.0
+            eta = (n_features - done) / rate if rate > 0 else float("inf")
+            print(f"  encoded {done}/{n_features} ({rate:.2f} tx/s, "
+                  f"avg {n_tokens_used[:done].mean():.0f} tokens/tx, "
+                  f"eta {eta:.0f}s)",
+                  flush=True)
 
     print(f"\nComputing cosine similarity ...")
     norms = V.norm(dim=1, keepdim=True).clamp_min(1e-12)
