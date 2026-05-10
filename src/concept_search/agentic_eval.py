@@ -274,6 +274,7 @@ async def evaluate_feature(
     renorm: bool = True,
     timeout: float = 180.0,
     client: Optional[httpx.AsyncClient] = None,
+    placebo: bool = False,
 ) -> EvalResult:
     """Run one full agentic eval for one feature, with K,V-faithful steering.
 
@@ -283,6 +284,14 @@ async def evaluate_feature(
     (the original SAE feature index) into the prompt for the model's
     convenience but uses `probe_index` (the server-side probe-set position)
     for the actual steering call.
+
+    `placebo=True`: parse the model's tool calls and segment the conversation
+    as usual (so the transcript still annotates which strength the model
+    *thought* it was applying), but never send any `intervention` to the
+    server and never populate `messages[].steering`. Hidden states are
+    completely unsteered. Use this to test whether the introspective
+    descriptions are tracking actual steering or are largely confabulated
+    from the prompt's framing.
     """
     t0 = time.time()
     eff_feature_idx = feature_idx if feature_idx is not None else probe_index
@@ -307,17 +316,28 @@ async def evaluate_feature(
         client = httpx.AsyncClient()
     assert client is not None  # narrowing for the type checker
 
+    def _build_msgs() -> list[dict]:
+        """Serialize segments to API. Under placebo, scrub all steering."""
+        if placebo:
+            scrubbed = [Segment(role=s.role, content=s.content, intervention=None)
+                        for s in segments]
+            return to_messages(
+                scrubbed,
+                current_assistant=(open_text, None) if open_text else None,
+            )
+        return to_messages(
+            segments,
+            current_assistant=(open_text, active_intervention) if open_text else None,
+        )
+
     try:
         for _round in range(max_rounds):
             tokens_left = max(1, max_tokens_total - tokens_used_estimate)
             this_round = min(max_tokens_per_round, tokens_left)
-            msgs = to_messages(
-                segments,
-                current_assistant=(open_text, active_intervention) if open_text else None,
-            )
+            msgs = _build_msgs()
             text, tool_calls, why = await _stream_round(
                 client, server, msgs,
-                intervention_for_decode=active_intervention,
+                intervention_for_decode=None if placebo else active_intervention,
                 max_tokens=this_round,
                 temperature=temperature,
                 timeout=timeout,
@@ -418,7 +438,7 @@ async def evaluate_feature(
                  "format: Final answer: X (where X is 0–100)."),
                 active_intervention=active_intervention,
             )
-            msgs = to_messages(segments)
+            msgs = _build_msgs()
             # Recovery: don't cut on tool-call matches — we want a clean final
             # answer, even if the model accidentally writes one.
             text, _calls, why = await _stream_round(

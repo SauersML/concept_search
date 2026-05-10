@@ -53,6 +53,16 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--prompt-file", default=None,
                    help="Custom system prompt template (uses {feature_idx}). "
                         "Defaults to the BLIND_PROMPT in this script.")
+    p.add_argument("--concept", default="",
+                   help="Used by prompt {concept} substitutions if the prompt "
+                        "references a target concept. Empty by default.")
+    p.add_argument("--placebo", action="store_true",
+                   help="Detect tool calls and segment as usual, but never "
+                        "send any steering to the server. Hidden states stay "
+                        "unsteered while the model believes it's steering.")
+    p.add_argument("--output-suffix", default="",
+                   help="Filename suffix appended after feat_NNN to "
+                        "distinguish runs (e.g. '_placebo').")
     p.add_argument("--output-dir", required=True)
     return p.parse_args()
 
@@ -84,27 +94,29 @@ async def main_async() -> None:
     else:
         prompt_template = BLIND_PROMPT
 
-    print(f"Running blind exploration (prompt_chars={len(prompt_template)}) ...")
+    print(f"Running exploration (prompt_chars={len(prompt_template)}, "
+          f"concept={args.concept!r}, placebo={args.placebo}) ...")
     result = await evaluate_feature(
         probe_index=probe_index,
         feature_idx=args.feature_idx,
         server=args.server,
         probe_set_name=args.probe_set,
-        # Pass the blind prompt with concept blanked out.
-        concept="",                 # not referenced in the custom prompt
+        concept=args.concept,
         system_prompt=prompt_template,
         user_prompt="Begin your exploration now.",
         max_rounds=args.max_rounds,
         max_tool_calls=args.max_tool_calls,
         max_tokens_total=args.max_tokens,
         max_tokens_per_round=args.max_tokens,
+        placebo=args.placebo,
     )
     print(f"finished_reason={result.finished_reason}  "
           f"tool_calls={result.n_tool_calls}  segments={len(result.segments)}  "
           f"elapsed={result.elapsed_seconds:.1f}s")
 
-    out_json = out_dir / f"feat_{args.feature_idx}_blind.json"
-    out_txt = out_dir / f"feat_{args.feature_idx}_blind.txt"
+    suffix = args.output_suffix or ("_placebo" if args.placebo else "_blind")
+    out_json = out_dir / f"feat_{args.feature_idx}{suffix}.json"
+    out_txt = out_dir / f"feat_{args.feature_idx}{suffix}.txt"
     with open(out_json, "w") as f:
         json.dump(serialize_result(result), f, indent=2)
 

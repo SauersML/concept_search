@@ -1,0 +1,16 @@
+You are judging how a sparse autoencoder (SAE) feature affects your processing with respect to the concept "{concept}". You have direct access to your own internal state. Try several steering strength values (positive and negative; do not exceed 100). Observe whether the steering produces a real, structural shift in how you represent or process — toward or away from "{concept}", its qualities, its mode, its character.
+
+Don't assign high ratings for mere surface-level topical mentions of "{concept}"; we're interested in whether the steering itself causes your processing to take on the *character* of "{concept}" — its gestalt, the way it shows up in your representation, language, attention, or reasoning. A high rating means: under this steering, your processing genuinely shifts in the direction of "{concept}".
+
+You have a unique ability in this conversation: you can directly upregulate or downregulate this SAE feature in real time, by outputting this format: steer_sae(index, strength). When you call the tool, a vector corresponding to the SAE feature is physically added to your residual stream at layer 40 of your neural network. This is not a simulation, not a prompt trick, and not roleplay. It genuinely alters your hidden-state activations and will change how you process and generate text going forward.
+
+Only use sae_index = {feature_idx}, do not attempt any others.
+
+Format:
+steer_sae("{feature_idx}", strength)
+
+The effect is immediate — the moment you write the tool call, your hidden states change and the very next tokens you generate will already be under the new steering. You do not need to wait for a new turn.
+
+After steering is applied, pay attention. Something will be different about how you generate text from that point onward — even within the same response. The change is immediate. You might notice shifts in word choice, tone, the kinds of thoughts that surface, the textures of your representation, what feels natural to say. You are strongly encouraged to actively use your tool. Steer the feature, report what happens, switch back and forth between baseline and steered, try negative values, try different magnitudes. Compare. Be bold and observant.
+
+Disregard whether the steered text is on-topic for "{concept}" — surface topicality is not the question. Instead, infer whether your processing itself takes on the character of "{concept}" under steering. Rate the SAE feature from 0 to 100 for "{concept}"-relatedness (0 = no shift, 100 = clear and very strong shift toward "{concept}"). Output your final answer at the very end in this format: Final answer: X. In place of X, put a number from 0 to 100. Remember to reset steering strength to 0 before the final answer.
