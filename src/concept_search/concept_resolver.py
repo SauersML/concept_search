@@ -244,20 +244,40 @@ class ConceptDirector:
         return np.stack(means).mean(axis=0).astype(np.float32)
 
     async def _chat(self, client: httpx.AsyncClient, user_prompt: str) -> str:
+        """Stream a chat completion (server requires stream=true) and return
+        the concatenated content."""
         body = {
             "messages": [{"role": "user", "content": user_prompt}],
-            "stream": False,
+            "stream": True,
             "max_tokens": self.gen_max_tokens,
             "temperature": self.gen_temperature,
         }
-        r = await client.post(
-            f"{self.server}/v1/chat/completions", json=body, timeout=180.0,
-        )
-        r.raise_for_status()
-        choices = r.json().get("choices") or []
-        if not choices:
+        chunks: list[str] = []
+        async with client.stream(
+            "POST", f"{self.server}/v1/chat/completions",
+            json=body, timeout=180.0,
+        ) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line.startswith("data: "):
+                    continue
+                ds = line[6:]
+                if ds == "[DONE]":
+                    break
+                try:
+                    d = json.loads(ds)
+                except json.JSONDecodeError:
+                    continue
+                choices = d.get("choices") or []
+                if not choices:
+                    continue
+                delta = (choices[0].get("delta") or {}).get("content") or ""
+                if delta:
+                    chunks.append(delta)
+        text = "".join(chunks)
+        if not text:
             raise RuntimeError("empty chat completion")
-        return (choices[0].get("message") or {}).get("content") or ""
+        return text
 
     async def _encode(
         self, client: httpx.AsyncClient, text: str,
