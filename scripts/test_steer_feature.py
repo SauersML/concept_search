@@ -54,6 +54,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max-rounds", type=int, default=25)
     p.add_argument("--max-tool-calls", type=int, default=15)
     p.add_argument("--max-tokens", type=int, default=6000)
+    p.add_argument("--placebo", action="store_true",
+                   help="Resolve concepts and segment normally but never "
+                        "actually send the steering to the server.")
     p.add_argument("--output-dir", required=True)
     return p.parse_args()
 
@@ -89,6 +92,7 @@ async def main_async() -> None:
             client=client,
             director=director,
             director_probe_set_name="live_concepts",
+            placebo=args.placebo,
         )
 
     print(f"finished_reason={result.finished_reason}  "
@@ -109,8 +113,9 @@ async def main_async() -> None:
         print(f"  [{i:2}] {s.role:9} {tag:50} ({len(s.content)} chars) {head}")
 
     # Save transcript
-    json_path = out_dir / "agentic_steer_feature.json"
-    txt_path = out_dir / "agentic_steer_feature.txt"
+    suffix = "_placebo" if args.placebo else ""
+    json_path = out_dir / f"agentic_steer_feature{suffix}.json"
+    txt_path = out_dir / f"agentic_steer_feature{suffix}.txt"
     with open(json_path, "w") as f:
         json.dump(serialize_result(result), f, indent=2)
     lines = [f"=== agentic eval with steer_feature ===",
