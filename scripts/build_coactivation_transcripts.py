@@ -232,11 +232,21 @@ async def main_async() -> None:
                   f"eta {eta:.0f}s)",
                   flush=True)
 
-    print(f"\nComputing cosine similarity ...")
-    norms = V.norm(dim=1, keepdim=True).clamp_min(1e-12)
-    Vn = V / norms
+    # Subtract cross-transcript mean before similarity. The bulk of every
+    # transcript is shared task framing ("I'll evaluate feature N", "let me
+    # try strength 30", etc.); without this step that shared component
+    # dominates and pushes off-diagonal cosine to ~0.9 (verified empirically).
+    # Subtracting the mean isolates the feature-specific deviation.
+    print(f"\nComputing cosine similarity (baseline-subtracted) ...")
+    baseline = V.mean(dim=0, keepdim=True)
+    V_dev = V - baseline
+    norms = V_dev.norm(dim=1, keepdim=True).clamp_min(1e-12)
+    Vn = V_dev / norms
     K = (Vn @ Vn.T).clamp(-1.0, 1.0).to(torch.float32).numpy()
     np.fill_diagonal(K, 1.0)
+    # Cosines after baseline subtraction can be negative (anti-correlated
+    # deviations). Map [-1, 1] → [0, pi] for the angular RBF kernel which
+    # expects non-negative angles.
     angles = np.arccos(np.clip(K, -1.0, 1.0)).astype(np.float32)
     np.fill_diagonal(angles, 0.0)
 
