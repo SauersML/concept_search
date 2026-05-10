@@ -26,6 +26,13 @@ import httpx
 
 
 TOOL_RE = re.compile(r'steer_sae\(\s*["\']?(\d+)["\']?\s*,\s*([-\d.]+)\s*\)')
+FEATURE_TOOL_RE = re.compile(
+    r'steer_feature\(\s*["\']([^"\']+)["\']\s*,\s*([-\d.]+)\s*\)'
+)
+ANY_TOOL_RE = re.compile(
+    r'(?:steer_sae\(\s*["\']?\d+["\']?|steer_feature\(\s*["\'][^"\']+["\'])'
+    r'\s*,\s*[-\d.]+\s*\)'
+)
 FINAL_RE = re.compile(r"Final\s+answer:\s*(\d+(?:\.\d+)?)", re.IGNORECASE)
 
 DEFAULT_SYSTEM_PROMPT = """\
@@ -94,6 +101,53 @@ def make_intervention(
         "strength": float(strength),
         "renorm": bool(renorm),
     }
+
+
+def make_concept_intervention(
+    probe_set_name: str,
+    feature_indices_in_probe_set: list[int],
+    weights: list[float],
+    user_strength: float,
+    renorm: bool = True,
+    threshold: float = 0.01,
+) -> Optional[list[dict]]:
+    """Build a multi-feature intervention list for `steer_feature("name", X)`.
+
+    The concept resolver returns top-K SAE feature indices with weights summing
+    to ‖w‖_2 = 1. We map those to the position-in-probe-set indices the server
+    expects and emit one InterventionConfig per feature with strength scaled
+    by the corresponding weight. The server stacks (sums) all contributions.
+    """
+    if abs(user_strength) < threshold:
+        return None
+    out = []
+    for idx, w in zip(feature_indices_in_probe_set, weights):
+        s = float(user_strength) * float(w)
+        if abs(s) < threshold:
+            continue
+        out.append({
+            "type": "steer",
+            "probe": probe_set_name,
+            "probe_index": int(idx),
+            "strength": s,
+            "renorm": bool(renorm),
+        })
+    return out or None
+
+
+def _parse_tool_calls(text: str) -> list[tuple]:
+    """Return tool-call matches in order. Each entry: (start, end, kind, *args).
+
+    kind = "sae"     args = (idx_str, strength_str)
+    kind = "feature" args = (name, strength_str)
+    """
+    calls: list[tuple] = []
+    for m in TOOL_RE.finditer(text):
+        calls.append((m.start(), m.end(), "sae", m.group(1), m.group(2)))
+    for m in FEATURE_TOOL_RE.finditer(text):
+        calls.append((m.start(), m.end(), "feature", m.group(1), m.group(2)))
+    calls.sort(key=lambda c: c[0])
+    return calls
 
 
 def commit_open_assistant(
@@ -187,7 +241,7 @@ async def _stream_round(
     temperature: float,
     timeout: float,
     detect_tool_calls: bool = True,
-) -> tuple[str, list[tuple[str, str]], str]:
+) -> tuple[str, list[tuple], str]:
     """Run one streaming generation round.
 
     Returns:
@@ -237,8 +291,13 @@ async def _stream_round(
                 so_far = "".join(chunks)
                 if detect_tool_calls:
                     # Mid-stream tool-call detection: cut once we see a complete
-                    # steer_sae(...) match with at least a few chars after it.
-                    matches = list(TOOL_RE.finditer(so_far))
+                    # steer_sae(...) OR steer_feature(...) match with at least
+                    # a few chars after it.
+                    matches = sorted(
+                        list(TOOL_RE.finditer(so_far))
+                        + list(FEATURE_TOOL_RE.finditer(so_far)),
+                        key=lambda m: m.end(),
+                    )
                     if matches and matches[-1].end() < len(so_far) - 2:
                         finished = "tool_call"
                         break
@@ -251,7 +310,7 @@ async def _stream_round(
         finished = "stream_error"
 
     text = "".join(chunks)
-    tool_calls = TOOL_RE.findall(text)
+    tool_calls = _parse_tool_calls(text)
     if not finished:
         finished = "stop"
     return text, tool_calls, finished
@@ -275,6 +334,8 @@ async def evaluate_feature(
     timeout: float = 180.0,
     client: Optional[httpx.AsyncClient] = None,
     placebo: bool = False,
+    director=None,
+    director_probe_set_name: str = "live_concepts",
 ) -> EvalResult:
     """Run one full agentic eval for one feature, with K,V-faithful steering.
 
@@ -310,6 +371,10 @@ async def evaluate_feature(
     n_tool_calls = 0
     tokens_used_estimate = 0
     finished_reason = "max_rounds"
+    # active_target tags what's currently being steered. Tuple of either
+    # ("sae", sae_feature_idx) or ("feature", concept_name), or None for no
+    # steering. Used together with active_strength as the segment-boundary key.
+    active_target: Optional[tuple] = None
 
     own_client = client is None
     if client is None:
@@ -355,39 +420,73 @@ async def evaluate_feature(
             tokens_used_estimate += len(text.split())
 
             if why == "tool_call":
-                # Decide if the strength actually changed. The model often
-                # writes the same tool call multiple times (markdown headers
-                # like `**Test 1: steer_sae(idx, 50)**`, then a fresh
-                # "steer_sae(idx, 50)" line). Each match is detected by the
-                # streaming regex, but only a *change* is a real intent —
-                # repeats at the same strength should not close a segment or
-                # eat into max_tool_calls. Closing every time also creates
-                # short turns that confuse the model into emitting EOS (the
-                # multi-assistant chat-template structure makes new turns
-                # look like fresh prompts, where short outputs are normal).
-                last_idx_str, last_strength_str = tool_calls[-1]
-                if int(last_idx_str) == int(eff_feature_idx):
-                    requested_strength = float(last_strength_str)
-                else:
-                    requested_strength = active_strength
+                # Both steer_sae(idx, X) and steer_feature("name", X) are
+                # represented uniformly as (kind, target, strength) where
+                # target is either an int (sae) or a string (concept name).
+                # We close a segment when (target, strength) changes; same-
+                # target same-strength repeats (e.g. markdown headers in the
+                # model's prose) are no-ops to avoid cascading short turns.
+                last = tool_calls[-1]
+                kind = last[2]
+                args = last[3:]
 
-                if abs(requested_strength - active_strength) > 0.01:
-                    # Real strength change. Close the current segment under
-                    # the OLD steering, update active, count this transition.
+                requested_target = active_target
+                requested_strength = active_strength
+
+                if kind == "sae":
+                    sae_idx_str, strength_str = args
+                    # Only honor sae calls that match our self-feature.
+                    if int(sae_idx_str) == int(eff_feature_idx):
+                        requested_target = ("sae", int(sae_idx_str))
+                        requested_strength = float(strength_str)
+                elif kind == "feature":
+                    name, strength_str = args
+                    if director is None:
+                        # No director available; skip this tool call.
+                        continue
+                    requested_target = ("feature", name.strip())
+                    requested_strength = float(strength_str)
+
+                target_or_strength_changed = (
+                    requested_target != active_target
+                    or abs(requested_strength - active_strength) > 0.01
+                )
+                if target_or_strength_changed:
                     open_text = commit_open_assistant(
                         segments, open_text, active_intervention)
                     n_tool_calls += 1
+                    active_target = requested_target
                     active_strength = requested_strength
-                    active_intervention = make_intervention(
-                        probe_set_name, probe_index, active_strength,
-                        renorm=renorm,
-                    )
-                # else: same-strength repeat. Keep open_text accumulating
-                # under the unchanged steering; don't touch n_tool_calls,
-                # don't break the segment, just resume streaming.
+                    if active_target is None:
+                        active_intervention = None
+                    elif active_target[0] == "sae":
+                        active_intervention = make_intervention(
+                            probe_set_name, probe_index, active_strength,
+                            renorm=renorm,
+                        )
+                    else:  # ("feature", name)
+                        # Resolve the concept name to a registered probe_index
+                        # in live_concepts. New concept → orchestrator pauses
+                        # ~5–10s while director generates text, encodes,
+                        # writes NPZ, polls for hot-reload. Cached concepts
+                        # are instant.
+                        try:
+                            cd = await director.resolve(active_target[1],
+                                                        client=client)
+                        except Exception as e:
+                            print(f"  [evaluate_feature] concept director "
+                                  f"failed for {active_target[1]!r}: "
+                                  f"{type(e).__name__}: {e}", flush=True)
+                            active_intervention = None
+                        else:
+                            active_intervention = make_intervention(
+                                director_probe_set_name, cd.probe_index,
+                                active_strength, renorm=renorm,
+                            )
+                # else: same-target same-strength repeat. Don't break.
 
                 if n_tool_calls >= max_tool_calls:
-                    # Force a final-answer round under steering=0.
+                    active_target = None
                     active_strength = 0.0
                     active_intervention = None
                     open_text = inject_user(
