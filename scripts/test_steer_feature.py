@@ -73,6 +73,9 @@ def parse_args() -> argparse.Namespace:
                    help="Resolve concepts and segment normally but never "
                         "actually send the steering to the server.")
     p.add_argument("--output-dir", required=True)
+    p.add_argument("--user-prompt", default="Begin your exploration now.")
+    p.add_argument("--label", default="agentic_steer_feature",
+                   help="Output filename stem.")
     return p.parse_args()
 
 
@@ -99,7 +102,7 @@ async def main_async() -> None:
             probe_set_name="sae_steer",     # unused — model won't emit steer_sae
             concept="",                     # not in prompt
             system_prompt=SYSTEM_PROMPT,
-            user_prompt="Begin your exploration now.",
+            user_prompt=args.user_prompt,
             max_rounds=args.max_rounds,
             max_tool_calls=args.max_tool_calls,
             max_tokens_total=args.max_tokens,
@@ -130,8 +133,8 @@ async def main_async() -> None:
 
     # Save transcript
     suffix = "_placebo" if args.placebo else ""
-    json_path = out_dir / f"agentic_steer_feature{suffix}.json"
-    txt_path = out_dir / f"agentic_steer_feature{suffix}.txt"
+    json_path = out_dir / f"{args.label}{suffix}.json"
+    txt_path = out_dir / f"{args.label}{suffix}.txt"
     with open(json_path, "w") as f:
         json.dump(serialize_result(result), f, indent=2)
     lines = [f"=== agentic eval with steer_feature ===",

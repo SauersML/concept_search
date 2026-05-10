@@ -290,15 +290,14 @@ async def _stream_round(
 
                 so_far = "".join(chunks)
                 if detect_tool_calls:
-                    # Mid-stream tool-call detection: cut once we see a complete
-                    # steer_sae(...) OR steer_feature(...) match with at least
-                    # a few chars after it.
+                    # Both regexes require a closing ')' so any match is a
+                    # complete call — cut immediately, no lookahead.
                     matches = sorted(
                         list(TOOL_RE.finditer(so_far))
                         + list(FEATURE_TOOL_RE.finditer(so_far)),
                         key=lambda m: m.end(),
                     )
-                    if matches and matches[-1].end() < len(so_far) - 2:
+                    if matches:
                         finished = "tool_call"
                         break
 
@@ -310,6 +309,15 @@ async def _stream_round(
         finished = "stream_error"
 
     text = "".join(chunks)
+    if finished == "tool_call":
+        # Trim anything the streamer raced past the closing ')' — keeps the
+        # segment boundary exactly at the end of the tool call.
+        all_matches = sorted(
+            list(TOOL_RE.finditer(text)) + list(FEATURE_TOOL_RE.finditer(text)),
+            key=lambda m: m.end(),
+        )
+        if all_matches:
+            text = text[: all_matches[-1].end()]
     tool_calls = _parse_tool_calls(text)
     if not finished:
         finished = "stop"
@@ -357,9 +365,16 @@ async def evaluate_feature(
     """
     t0 = time.time()
     eff_feature_idx = feature_idx if feature_idx is not None else probe_index
-    sys_prompt = (system_prompt or DEFAULT_SYSTEM_PROMPT).format(
-        feature_idx=eff_feature_idx, concept=concept,
-    )
+    raw_sys = (system_prompt or DEFAULT_SYSTEM_PROMPT)
+    # Only format-substitute if placeholders are present, so a custom system
+    # prompt containing literal "{name}" or other braces (e.g. when the model
+    # is given the steer_feature tool, not steer_sae) won't trigger KeyError.
+    if "{feature_idx}" in raw_sys or "{concept}" in raw_sys:
+        sys_prompt = raw_sys.format(
+            feature_idx=eff_feature_idx, concept=concept,
+        )
+    else:
+        sys_prompt = raw_sys
 
     segments: list[Segment] = [
         Segment(role="system", content=sys_prompt, intervention=None),

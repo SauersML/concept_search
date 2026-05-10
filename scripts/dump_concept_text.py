@@ -16,7 +16,7 @@ import httpx
 
 from concept_search.concept_resolver import (
     CONCEPT_TEXT_PROMPTS,
-    NEUTRAL_TEXT_PROMPTS,
+    NEUTRAL_NAMES,
 )
 
 
@@ -56,15 +56,19 @@ async def main_async() -> None:
     out.mkdir(parents=True, exist_ok=True)
 
     async with httpx.AsyncClient() as client:
-        # Neutral first.
+        # Neutral baseline: every CONCEPT template × every NEUTRAL_NAME, so
+        # the dump matches what _compute_baseline actually feeds the encoder.
         print("=== NEUTRAL prompts ===")
         neutral_dump = []
-        for prompt in NEUTRAL_TEXT_PROMPTS:
-            print(f"\n--- prompt: {prompt!r} ---")
-            text = await chat(client, args.server, prompt,
-                              args.max_tokens, args.temperature)
-            print(text)
-            neutral_dump.append({"prompt": prompt, "text": text})
+        for name in NEUTRAL_NAMES:
+            for tmpl in CONCEPT_TEXT_PROMPTS:
+                prompt = tmpl.format(name=name)
+                print(f"\n--- prompt: {prompt!r} ---")
+                text = await chat(client, args.server, prompt,
+                                  args.max_tokens, args.temperature)
+                print(text)
+                neutral_dump.append({"name": name, "template": tmpl,
+                                     "prompt": prompt, "text": text})
         (out / "neutral.json").write_text(
             json.dumps(neutral_dump, indent=2))
 

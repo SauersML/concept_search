@@ -2,7 +2,7 @@
 
 Resolves a couple of concept names ("anger", "liquid"), prints what the
 resolver did, and verifies that:
-  - the NEUTRAL_TEXT_PROMPTS baseline got computed and cached
+  - the CONCEPT_TEXT_PROMPTS × NEUTRAL_NAMES baseline got computed and cached
   - the live_concepts NPZ now contains the resolved concepts
   - /v1/probes shows the live_concepts probe set with each concept's name
   - cached resolutions on second call return instantly
